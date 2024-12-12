@@ -8,60 +8,75 @@ import (
 )
 
 type SimulationState struct {
+}
+type BotState struct {
+	GotLowerPrice    bool
+	ActivePrice      int
+	PreviouslyActive bool
+	Lifetime         int
+	LiveSteps        int
+	State            string
+	Booking          bool
+	LowestPrice      int
+	TimedOut         bool
+	SearchPrice      int
+	BookingPrice     int
+}
+
+type Simulation struct {
+	ActualStartTime     time.Time
+	ActualFinishTime    time.Time
+	StartTime           time.Time
+	CurrentTime         time.Time
+	TimeStep            time.Duration
+	AutoStep            bool
+	DoneChan            chan struct{}
+	Mutex               sync.Mutex
+	RNG                 *rand.Rand
+	StepsTaken          int
+	EndSteps            int
+	ActorCount          int
+	CurrentActors       int
 	CurrentPrice        int
 	TotalBookings       int
 	MaximumBots         int
 	ActiveBots          []string
 	ChanceOfBooking     int
 	NumberOfLowerPrices int
-}
-type BotState struct {
-	Lifetime    int
-	LiveSteps   int
-	State       string
-	Booking     bool
-	LowestPrice int
-	LastPrice   int
-	TimedOut    bool
-}
-
-type Simulation struct {
-	ActualStartTime  time.Time
-	ActualFinishTime time.Time
-	StartTime        time.Time
-	CurrentTime      time.Time
-	TimeStep         time.Duration
-	AutoStep         bool
-	DoneChan         chan struct{}
-	Mutex            sync.Mutex
-	RNG              *rand.Rand
-	StepsTaken       int
-	EndSteps         int
-	ActorCount       int
-	CurrentActors    int
-	State            SimulationState
+	AvailablePrices     []int
+	TotalActivations    int
+	HigherPriceLocked   int
 }
 
 func NewSimulation() *Simulation {
 	return &Simulation{
-		AutoStep:        true,
-		ActualStartTime: time.Now(),
-		StartTime:       time.Date(2000, 1, 1, 0, 0, 0, 0, time.Now().UTC().Location()),
-		CurrentTime:     time.Date(2000, 1, 1, 0, 0, 0, 0, time.Now().UTC().Location()),
-		TimeStep:        time.Second,
-		DoneChan:        make(chan struct{}),
-		RNG:             rand.New(rand.NewSource(99)),
-		EndSteps:        1800,
-		ActorCount:      1,
-		CurrentActors:   0,
-		State: SimulationState{
-			CurrentPrice:        4000,
-			TotalBookings:       0,
-			ChanceOfBooking:     100,
-			MaximumBots:         5,
-			NumberOfLowerPrices: 0,
-		},
+		AutoStep:            true,
+		ActualStartTime:     time.Now(),
+		StartTime:           time.Date(2000, 1, 1, 0, 0, 0, 0, time.Now().UTC().Location()),
+		CurrentTime:         time.Date(2000, 1, 1, 0, 0, 0, 0, time.Now().UTC().Location()),
+		TimeStep:            time.Second,
+		DoneChan:            make(chan struct{}),
+		RNG:                 rand.New(rand.NewSource(99)),
+		EndSteps:            1800,
+		ActorCount:          1,
+		CurrentActors:       0,
+		CurrentPrice:        4000,
+		TotalBookings:       0,
+		ChanceOfBooking:     100,
+		MaximumBots:         42,
+		NumberOfLowerPrices: 0,
+		TotalActivations:    0,
+		HigherPriceLocked:   0,
 	}
+}
+
+func removeInt(slice []int, val int) []int {
+	for i, v := range slice {
+		if v == val {
+			return append(slice[:i], slice[i+1:]...)
+		}
+	}
+	return slice
 }
 
 func removeString(slice []string, s string) []string {
@@ -78,37 +93,51 @@ func main() {
 	sim.StepsTaken = 0
 	sim.ActualStartTime = time.Now()
 
-	RNG := rand.New(rand.NewSource(99))
+	RNG := rand.New(rand.NewSource(time.Now().UnixNano()))
+
+	populationSize := 18000
 
 	// create a population of bots
 	bots := make(map[string]*BotState)
-	for i := 1; i < 18000; i++ {
+	for i := 1; i < populationSize; i++ {
 		bots[fmt.Sprintf("bot%d", i)] = &BotState{
-			Lifetime:    0,
-			LiveSteps:   0,
-			State:       "dormant",
-			Booking:     false,
-			LowestPrice: 0,
-			LastPrice:   0,
-			TimedOut:    false,
+			Lifetime:         0,
+			LiveSteps:        0,
+			State:            "dormant",
+			Booking:          false,
+			LowestPrice:      0,
+			TimedOut:         false,
+			PreviouslyActive: false,
 		}
 	}
 
 	for sim.StepsTaken < sim.EndSteps {
-		prevActiveBots := len(sim.State.ActiveBots)
+		prevActiveBots := len(sim.ActiveBots)
 
 		// make enough bots active
-		for i := 1; i < 18000 && len(sim.State.ActiveBots) < prevActiveBots+sim.State.MaximumBots; i++ {
+		for i := 1; i < populationSize && len(sim.ActiveBots) < prevActiveBots+sim.MaximumBots; i++ {
 			id := fmt.Sprintf("bot%d", i)
 			bot := bots[id]
 			if bot.State == "dormant" {
 				bot.State = "active"
+				sim.TotalActivations++
+
+				// take a price from the available set, if any
+				if len(sim.AvailablePrices) > 0 {
+					bot.GotLowerPrice = true
+					bot.ActivePrice = sim.AvailablePrices[0]
+					sim.AvailablePrices = removeInt(sim.AvailablePrices, bot.ActivePrice)
+				} else {
+					bot.GotLowerPrice = false
+					bot.ActivePrice = sim.CurrentPrice
+					bot.SearchPrice = sim.CurrentPrice
+				}
+
 				bot.LiveSteps = 0
 				bot.Booking = false
 				bot.TimedOut = false
 				bot.LowestPrice = -1
-				bot.LastPrice = 0
-				if RNG.Intn(100)+1 < sim.State.ChanceOfBooking {
+				if RNG.Intn(100)+1 < sim.ChanceOfBooking {
 					bot.Lifetime = RNG.Intn(235) + 6
 					bot.Booking = true
 					bot.TimedOut = false
@@ -121,46 +150,60 @@ func main() {
 						bot.Lifetime = RNG.Intn(595) + 6
 					}
 				}
-				sim.State.ActiveBots = append(sim.State.ActiveBots, id)
+				sim.ActiveBots = append(sim.ActiveBots, id)
 
-				fmt.Println("🏃‍♂️", id, "Actor is now active, booking:", bot.Booking, "timed out:", bot.TimedOut)
+				if bot.PreviouslyActive {
+					fmt.Println("♻️", id, "Actor is active again, booking:", bot.Booking, "timed out:", bot.TimedOut, "price quoted:", bot.ActivePrice)
+				} else {
+					bot.PreviouslyActive = true
+					fmt.Println("🏃", id, "Actor is now active, booking:", bot.Booking, "timed out:", bot.TimedOut, "price quoted:", bot.ActivePrice)
+				}
 			}
 		}
 
 		// step the active bots
-		for _, id := range sim.State.ActiveBots {
+		for _, id := range sim.ActiveBots {
 			bot := bots[id]
 			if bot.Booking {
-				if bot.LiveSteps >= bot.Lifetime {
-					fmt.Println("🧡", id, "Actor is booking at price:", sim.State.CurrentPrice)
-					if bot.LowestPrice == -1 {
-						bot.LowestPrice = sim.State.CurrentPrice
-					} else {
-						if sim.State.CurrentPrice < bot.LowestPrice {
-							bot.LowestPrice = sim.State.CurrentPrice
-							sim.State.NumberOfLowerPrices++
-						}
+				if bot.LiveSteps == 1 {
+					// lock in the price
+					if sim.CurrentPrice > bot.SearchPrice {
+						bot.ActivePrice = sim.CurrentPrice
+						sim.HigherPriceLocked++
 					}
+				}
+
+				if bot.LiveSteps >= bot.Lifetime {
+					if bot.GotLowerPrice {
+						fmt.Println("💖", id, "New booking at lower price:", bot.ActivePrice)
+						sim.NumberOfLowerPrices++
+						bot.LowestPrice = bot.ActivePrice
+					} else {
+						fmt.Println("💗", id, "Booking at current market price:", bot.ActivePrice)
+						bot.LowestPrice = bot.ActivePrice
+					}
+
 					// done, booked
-					sim.State.TotalBookings++
+					sim.TotalBookings++
 					bot.State = "dormant"
 					// remove from active bots
-					sim.State.ActiveBots = removeString(sim.State.ActiveBots, id)
+					sim.ActiveBots = removeString(sim.ActiveBots, id)
 
-					if sim.State.TotalBookings%20 == 0 {
-						sim.State.CurrentPrice += 5
-						sim.State.ChanceOfBooking--
-						if sim.State.ChanceOfBooking < 0 {
-							sim.State.ChanceOfBooking = 0
+					if sim.TotalBookings%20 == 0 {
+						sim.CurrentPrice += 5
+						sim.ChanceOfBooking--
+						if sim.ChanceOfBooking < 1 {
+							sim.ChanceOfBooking = 1
 						}
-						fmt.Println("☝🏻 Price increased to: ", sim.State.CurrentPrice, ", chance of booking: ", sim.State.ChanceOfBooking)
+						fmt.Println("☝🏻 Price increased to: ", sim.CurrentPrice, ", chance of booking: ", sim.ChanceOfBooking)
 					}
 				}
 			} else {
 				if bot.LiveSteps >= bot.Lifetime {
-					fmt.Println("🤕", id, "Actor exceeded lifetime (timeout or drop off)")
+					fmt.Println("🤕", id, "Actor exceeded lifetime (timeout or drop off), will return availability at price:", bot.ActivePrice)
 					bot.State = "dormant"
-					sim.State.ActiveBots = removeString(sim.State.ActiveBots, id)
+					sim.ActiveBots = removeString(sim.ActiveBots, id)
+					sim.AvailablePrices = append(sim.AvailablePrices, bot.ActivePrice)
 				}
 			}
 
@@ -169,8 +212,8 @@ func main() {
 
 		sim.StepsTaken++
 		sim.CurrentTime = sim.CurrentTime.Add(sim.TimeStep)
-		fmt.Println("Step:", sim.StepsTaken, ", simulation time:", sim.CurrentTime, "; Active bots:", len(sim.State.ActiveBots))
+		fmt.Println("Step =", sim.StepsTaken, ", simulation time =", sim.CurrentTime, "; Active bots =", len(sim.ActiveBots))
 	}
 
-	fmt.Println("🛑 Simulation state: Active bots=", len(sim.State.ActiveBots), "Chance of booking=", sim.State.ChanceOfBooking, "Current price=", sim.State.CurrentPrice, "Lower prices=", sim.State.NumberOfLowerPrices, "Total bookings=", sim.State.TotalBookings)
+	fmt.Println("🛑 Simulation state: Active bots =", len(sim.ActiveBots), "Chance of booking =", sim.ChanceOfBooking, "Current price =", sim.CurrentPrice, "Lower prices =", sim.NumberOfLowerPrices, "Total bookings =", sim.TotalBookings, "Total activations =", sim.TotalActivations, "Higher price locked =", sim.HigherPriceLocked)
 }
