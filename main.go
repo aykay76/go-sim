@@ -29,11 +29,8 @@ type Simulation struct {
 	AutoStep            bool
 	DoneChan            chan struct{}
 	Mutex               sync.Mutex
-	RNG                 *rand.Rand
 	StepsTaken          int
 	EndSteps            int
-	ActorCount          int
-	CurrentActors       int
 	CurrentPrice        int
 	TotalBookings       int
 	MaximumBots         int
@@ -41,7 +38,7 @@ type Simulation struct {
 	ChanceOfBooking     int
 	NumberOfLowerPrices int
 	AvailablePrices     []int
-	TotalActivations    int
+	TotalSearches       int
 	HigherPriceLocked   int
 	LockedCurrentPrice  int
 }
@@ -54,16 +51,13 @@ func NewSimulation() *Simulation {
 		CurrentTime:         time.Date(2000, 1, 1, 0, 0, 0, 0, time.Now().UTC().Location()),
 		TimeStep:            time.Second,
 		DoneChan:            make(chan struct{}),
-		RNG:                 rand.New(rand.NewSource(99)),
 		EndSteps:            1800,
-		ActorCount:          1,
-		CurrentActors:       0,
 		CurrentPrice:        4000,
 		TotalBookings:       0,
 		ChanceOfBooking:     100,
 		MaximumBots:         42,
 		NumberOfLowerPrices: 0,
-		TotalActivations:    0,
+		TotalSearches:       0,
 		HigherPriceLocked:   0,
 	}
 }
@@ -98,7 +92,7 @@ func main() {
 	// create a population of bots
 	bots := make(map[string]*BotState)
 	for i := 1; i < populationSize; i++ {
-		bots[fmt.Sprintf("bot%d", i)] = &BotState{
+		bots[fmt.Sprintf("bot-%d", i)] = &BotState{
 			Lifetime:         0,
 			LiveSteps:        0,
 			State:            "dormant",
@@ -110,15 +104,17 @@ func main() {
 	}
 
 	for sim.StepsTaken < sim.EndSteps {
+		fmt.Println("Step =", sim.StepsTaken, ", simulation time =", sim.CurrentTime, "; Active bots =", len(sim.ActiveBots))
+
 		prevActiveBots := len(sim.ActiveBots)
 
 		// make enough bots active
 		for i := 1; i < populationSize && len(sim.ActiveBots) < prevActiveBots+sim.MaximumBots; i++ {
-			id := fmt.Sprintf("bot%d", i)
+			id := fmt.Sprintf("bot-%d", i)
 			bot := bots[id]
 			if bot.State == "dormant" {
 				bot.State = "active"
-				sim.TotalActivations++
+				sim.TotalSearches++
 
 				// take a price from the available set, if any
 				if len(sim.AvailablePrices) > 0 {
@@ -153,10 +149,10 @@ func main() {
 				sim.ActiveBots = append(sim.ActiveBots, id)
 
 				if bot.PreviouslyActive {
-					fmt.Println("♻️", id, "Actor is active again, booking:", bot.Booking, "timed out:", bot.TimedOut, "price quoted:", bot.SearchPrice)
+					fmt.Println("♻️", id, "is active again, booking:", bot.Booking, "timed out:", bot.TimedOut, "search price:", bot.SearchPrice)
 				} else {
 					bot.PreviouslyActive = true
-					fmt.Println("🏃", id, "Actor is now active, booking:", bot.Booking, "timed out:", bot.TimedOut, "price quoted:", bot.SearchPrice)
+					fmt.Println("🏃", id, "is now active, booking:", bot.Booking, "timed out:", bot.TimedOut, "search price:", bot.SearchPrice)
 				}
 			}
 		}
@@ -172,10 +168,10 @@ func main() {
 						sim.HigherPriceLocked++
 					}
 
-					sim.LockedCurrentPrice++
-					fmt.Println("🔒 Price locked in at:", sim.CurrentPrice)
+					fmt.Println("🔒", id, "locked price at:", sim.CurrentPrice)
 
 					if !bot.GotLowerPrice {
+						sim.LockedCurrentPrice++
 						if sim.LockedCurrentPrice == 20 {
 							sim.CurrentPrice += 5
 							sim.LockedCurrentPrice = 0
@@ -191,11 +187,11 @@ func main() {
 
 				if bot.LiveSteps >= bot.Lifetime {
 					if bot.GotLowerPrice {
-						fmt.Println("💖", id, "New booking at lower price:", bot.SearchPrice)
+						fmt.Println("💖", id, "booked at lower price:", bot.SearchPrice)
 						sim.NumberOfLowerPrices++
 						bot.LowestPrice = bot.SearchPrice
 					} else {
-						fmt.Println("💗", id, "Booking at current market price:", bot.SearchPrice)
+						fmt.Println("💗", id, "booked at current market price:", bot.SearchPrice)
 						bot.LowestPrice = bot.SearchPrice
 					}
 
@@ -216,7 +212,7 @@ func main() {
 				}
 			} else {
 				if bot.LiveSteps >= bot.Lifetime {
-					fmt.Println("🤕", id, "Actor exceeded lifetime (timeout or drop off), will return availability at price:", bot.SearchPrice)
+					fmt.Println("🤕", id, "exceeded lifetime (timeout or drop off), will return availability at price:", bot.SearchPrice)
 					bot.State = "dormant"
 					sim.ActiveBots = removeString(sim.ActiveBots, id)
 					sim.AvailablePrices = append(sim.AvailablePrices, bot.SearchPrice)
@@ -228,8 +224,7 @@ func main() {
 
 		sim.StepsTaken++
 		sim.CurrentTime = sim.CurrentTime.Add(sim.TimeStep)
-		fmt.Println("Step =", sim.StepsTaken, ", simulation time =", sim.CurrentTime, "; Active bots =", len(sim.ActiveBots))
 	}
 
-	fmt.Println("🛑 Simulation state: Active bots =", len(sim.ActiveBots), "Chance of booking =", sim.ChanceOfBooking, "Current price =", sim.CurrentPrice, "Lower prices =", sim.NumberOfLowerPrices, "Total bookings =", sim.TotalBookings, "Total activations =", sim.TotalActivations, "Higher price locked =", sim.HigherPriceLocked)
+	fmt.Println("🛑 Simulation state: Active bots =", len(sim.ActiveBots), "Current price =", sim.CurrentPrice, "Lower prices =", sim.NumberOfLowerPrices, "Total bookings =", sim.TotalBookings, "Total searches =", sim.TotalSearches, "Higher price locked =", sim.HigherPriceLocked)
 }
