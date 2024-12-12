@@ -29,3 +29,6 @@ jobs:
 
         - name: Run tests
           run: go test -v ./...
+
+        - name: Run code
+          run: go run .

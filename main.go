@@ -7,11 +7,8 @@ import (
 	"time"
 )
 
-type SimulationState struct {
-}
 type BotState struct {
 	GotLowerPrice    bool
-	ActivePrice      int
 	PreviouslyActive bool
 	Lifetime         int
 	LiveSteps        int
@@ -46,6 +43,7 @@ type Simulation struct {
 	AvailablePrices     []int
 	TotalActivations    int
 	HigherPriceLocked   int
+	LockedCurrentPrice  int
 }
 
 func NewSimulation() *Simulation {
@@ -125,11 +123,10 @@ func main() {
 				// take a price from the available set, if any
 				if len(sim.AvailablePrices) > 0 {
 					bot.GotLowerPrice = true
-					bot.ActivePrice = sim.AvailablePrices[0]
-					sim.AvailablePrices = removeInt(sim.AvailablePrices, bot.ActivePrice)
+					bot.SearchPrice = sim.AvailablePrices[0]
+					sim.AvailablePrices = removeInt(sim.AvailablePrices, bot.SearchPrice)
 				} else {
 					bot.GotLowerPrice = false
-					bot.ActivePrice = sim.CurrentPrice
 					bot.SearchPrice = sim.CurrentPrice
 				}
 
@@ -137,7 +134,10 @@ func main() {
 				bot.Booking = false
 				bot.TimedOut = false
 				bot.LowestPrice = -1
-				if RNG.Intn(100)+1 < sim.ChanceOfBooking {
+
+				chanceOfBooking := 100 - ((bot.SearchPrice - 4000) / 5)
+
+				if RNG.Intn(100)+1 < chanceOfBooking {
 					bot.Lifetime = RNG.Intn(235) + 6
 					bot.Booking = true
 					bot.TimedOut = false
@@ -153,10 +153,10 @@ func main() {
 				sim.ActiveBots = append(sim.ActiveBots, id)
 
 				if bot.PreviouslyActive {
-					fmt.Println("♻️", id, "Actor is active again, booking:", bot.Booking, "timed out:", bot.TimedOut, "price quoted:", bot.ActivePrice)
+					fmt.Println("♻️", id, "Actor is active again, booking:", bot.Booking, "timed out:", bot.TimedOut, "price quoted:", bot.SearchPrice)
 				} else {
 					bot.PreviouslyActive = true
-					fmt.Println("🏃", id, "Actor is now active, booking:", bot.Booking, "timed out:", bot.TimedOut, "price quoted:", bot.ActivePrice)
+					fmt.Println("🏃", id, "Actor is now active, booking:", bot.Booking, "timed out:", bot.TimedOut, "price quoted:", bot.SearchPrice)
 				}
 			}
 		}
@@ -168,19 +168,35 @@ func main() {
 				if bot.LiveSteps == 1 {
 					// lock in the price
 					if sim.CurrentPrice > bot.SearchPrice {
-						bot.ActivePrice = sim.CurrentPrice
+						bot.SearchPrice = sim.CurrentPrice
 						sim.HigherPriceLocked++
+					}
+
+					sim.LockedCurrentPrice++
+					fmt.Println("🔒 Price locked in at:", sim.CurrentPrice)
+
+					if !bot.GotLowerPrice {
+						if sim.LockedCurrentPrice == 20 {
+							sim.CurrentPrice += 5
+							sim.LockedCurrentPrice = 0
+
+							sim.ChanceOfBooking--
+							if sim.ChanceOfBooking < 0 {
+								sim.ChanceOfBooking = 0
+							}
+							fmt.Println("🔏 Price increased to: ", sim.CurrentPrice, "chance of booking: ", sim.ChanceOfBooking)
+						}
 					}
 				}
 
 				if bot.LiveSteps >= bot.Lifetime {
 					if bot.GotLowerPrice {
-						fmt.Println("💖", id, "New booking at lower price:", bot.ActivePrice)
+						fmt.Println("💖", id, "New booking at lower price:", bot.SearchPrice)
 						sim.NumberOfLowerPrices++
-						bot.LowestPrice = bot.ActivePrice
+						bot.LowestPrice = bot.SearchPrice
 					} else {
-						fmt.Println("💗", id, "Booking at current market price:", bot.ActivePrice)
-						bot.LowestPrice = bot.ActivePrice
+						fmt.Println("💗", id, "Booking at current market price:", bot.SearchPrice)
+						bot.LowestPrice = bot.SearchPrice
 					}
 
 					// done, booked
@@ -192,18 +208,18 @@ func main() {
 					if sim.TotalBookings%20 == 0 {
 						sim.CurrentPrice += 5
 						sim.ChanceOfBooking--
-						if sim.ChanceOfBooking < 1 {
-							sim.ChanceOfBooking = 1
+						if sim.ChanceOfBooking < 0 {
+							sim.ChanceOfBooking = 0
 						}
 						fmt.Println("☝🏻 Price increased to: ", sim.CurrentPrice, ", chance of booking: ", sim.ChanceOfBooking)
 					}
 				}
 			} else {
 				if bot.LiveSteps >= bot.Lifetime {
-					fmt.Println("🤕", id, "Actor exceeded lifetime (timeout or drop off), will return availability at price:", bot.ActivePrice)
+					fmt.Println("🤕", id, "Actor exceeded lifetime (timeout or drop off), will return availability at price:", bot.SearchPrice)
 					bot.State = "dormant"
 					sim.ActiveBots = removeString(sim.ActiveBots, id)
-					sim.AvailablePrices = append(sim.AvailablePrices, bot.ActivePrice)
+					sim.AvailablePrices = append(sim.AvailablePrices, bot.SearchPrice)
 				}
 			}
 
